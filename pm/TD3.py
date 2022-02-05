@@ -5,21 +5,23 @@ import tensorflow as tf
 
 C  = 0.01
 
+
 class TD3(tf_PORTFOLIO):
-    def __init__(self, N, maxsize, actor_lr, critic_lr, gamma, tau):
-        tf_PORTFOLIO.__init__(N)
+    def __init__(self, N, num_features,  maxsize, actor_lr, critic_lr, gamma, tau):
+        super().__init__(N)
         self.Buffer = REPLAY_BUFFER(maxsize)
         self.actor_optimizer = keras.optimizers.Adam(learning_rate = actor_lr)
         self.critic_optimizer = keras.optimizers.Adam(learning_rate = critic_lr)
+        self.gamma = gamma
+        self.tau = tau
+        self.num_features = num_features
+        self.prev_allocation = tf.Variable(tf.zeros_like(self.pf_allocation, dtype=tf.float32))
+        self.prev_value = tf.Variable(1, dtype = tf.float32)
         self.create_actor()
         self.create_critic()
         self.reset()
-        self.gamma = gamma
-        self.tau = tau
-        self.num_features = 10
-        self.prev_allocation = tf.Variable(tf.zeros_like(self.pf_allocation, dtype=tf.float32))
-        self.prev_value = tf.Variable(1, dtype = tf.float32)
         #self.noise = tf.Variable(tf.zeros_like(self.pf_allocation, dtype=tf.float32))
+
 
     @tf.function
     def reset(self):
@@ -42,7 +44,7 @@ class TD3(tf_PORTFOLIO):
 
 
     @tf.function
-    def train_critic(self, W, S, A, R, W_, S_):
+    def train_critic(self, S, W, A, R, S_, W_):
         with tf.GradientTape() as tape:
             A_target = self.actor_target([S_, W_])
             y_target = R + self.gamma * tf.math.minimum(self.critic_target_1([S_, W_, A_target]), self.critic_target_2([S_, W_, A_target]))
@@ -63,37 +65,38 @@ class TD3(tf_PORTFOLIO):
         self.actor_optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
 
     def create_actor(self):
-        S =  keras.Input(shape = (self.N, self.num_features))
-        W =  keras.Input(shape = (self.N, 1))
+        S =  keras.Input(shape = (None, self.N, self.num_features))
+        W =  keras.Input(shape = (None, self.N, 1))
 
-        y = keras.layers.Concatenate([S, W])
-        y = keras.layers.Dense(50)(S)
+        y = keras.layers.Concatenate()([S, W])
+        y = keras.layers.Dense(50, activation='linear')(S)
         y = keras.layers.Dense(500, activation='relu')(y)
         y = keras.layers.Dense(500, activation='relu')(y)
         y = keras.layers.Dense(50, activation='sigmoid')(y)
-        y = keras.layers.Dense(self.N, activation='linear')(y)
+        y = keras.layers.Dense(1, activation='linear')(y)
+        y = keras.layers.Flatten()(y)
         output = y / tf.math.reduce_sum(y)
-        self.actor = keras.Model(inputs = S, outputs = output)
-        self.actor_target = keras.Model(inputs = S, outputs = output)
+        
+        self.actor = keras.Model(inputs = [S, W], outputs = output)
+        self.actor_target = keras.Model(inputs = [S, W], outputs = output)
         self.actor_target.set_weights(self.actor.get_weights())
 
     def create_critic(self):
-        S =  keras.Input(shape = (self.N, self.num_features))
-        W =  keras.Input(shape = (self.N, 1))
-        A =  keras.Input(shape = (self.N, 1))
+        S =  keras.Input(shape = (None, self.N, self.num_features))
+        W =  keras.Input(shape = (None, self.N, 1))
+        A =  keras.Input(shape = (None, self.N, 1))
 
-        y = keras.layers.Concatenate([S, W])
-        y = keras.layers.Concatenate(S)
-        y = keras.layers.Dense(50)(y)
+        y = keras.layers.Concatenate()([S, W])
+        y = keras.layers.Dense(50, activation='linear')(y)
         y = keras.layers.Dense(500, activation='relu')(y)
         y = keras.layers.Dense(500, activation='relu')(y)
         y = keras.layers.Dense(50, activation='sigmoid')(y)
-        output = keras.layers.Dense(1, activation='linear')(y) *  (1 - C * tf.norm(W - A, ord=1))
+        y = keras.layers.Dense(1, activation='linear')(y)
+        output = tf.math.reduce_sum(y) *  (1 - C * tf.norm(W - A, ord=1))
 
-
-        self.critic = keras.Model(inputs = S, outputs = output)
-        self.critic_target_1 = keras.Model(inputs = S, outputs = output)
-        self.critic_target_2 = keras.Model(inputs = S, outputs = output)
+        self.critic = keras.Model(inputs = [S, W, A], outputs = output)
+        self.critic_target_1 = keras.Model(inputs = [S, W, A], outputs = output)
+        self.critic_target_2 = keras.Model(inputs = [S, W, A], outputs = output)
         self.critic_target_1.set_weights(self.critic.get_weights())
         self.critic_target_2.set_weights(self.critic.get_weights())
     
@@ -105,3 +108,15 @@ class TD3(tf_PORTFOLIO):
             a.assign(a * (1 - self.tau) + b * self.tau)
         for (a, b) in zip(self.actor_target.variables, self.actor.variables):
             a.assign(a * (1 - self.tau) + b * self.tau)
+
+
+X = TD3(2, 2, 10000, 0.1, 0.1 , 0.99, 0.95)
+import numpy as np
+S = np.zeros((X.N, X.num_features))
+
+W =  np.zeros((X.N, 1))
+
+A =  np.zeros((X.N, 1))
+
+#print(X.actor([S,W]))
+print(X.critic([S, A, A]))
